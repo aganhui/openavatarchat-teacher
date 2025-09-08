@@ -33,6 +33,11 @@ class HandlerTts2FaceContext(HandlerContext):
         self.event_out_thread = threading.Thread(target=self._event_out_loop)
         self.event_out_thread.start()
 
+        # 用于人声打断判定的计时
+        self.human_speech_acc_ms: float = 0.0
+        self.human_speech_last_ts: float = 0.0
+        self.interrupt_sent: bool = False
+
     def return_data(self, data, chat_data_type: ChatDataType):
         definition = self.output_data_definitions.get(chat_data_type)
         if definition is None:
@@ -82,6 +87,10 @@ class HandlerTts2FaceContext(HandlerContext):
                 logger.info("receive output event: {}", event)
                 if event == Tts2FaceEvent.SPEAKING_TO_LISTENING:
                     self.shared_state.enable_vad = True
+                    self.shared_state.avatar_speaking = False
+                    # 在 RTC 场景下无法准确获知浏览器实际播放完，
+                    # 以头像状态回到聆听视作本段播报完成，驱动脚本续播
+                    self.shared_state.frontend_playback_done = True
             except Exception:
                 continue
         logger.info("event out loop exit")

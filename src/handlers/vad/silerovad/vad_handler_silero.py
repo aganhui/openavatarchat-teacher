@@ -76,6 +76,10 @@ class HumanAudioVADContext(HandlerContext):
                 [np.zeros(self.config.speech_padding, dtype=clip.dtype), output_audio], axis=0)
             self.speech_id += 1
             logger.info("Start of human speech")
+            # 立刻标记用户开始说话，暂停脚本/播报
+            if self.shared_states is not None:
+                self.shared_states.user_speaking = True
+                self.shared_states.script_paused = True
             extra_args =  {
                 "human_speech_start": True,
                 "pre_padding": self.config.speech_padding,
@@ -96,6 +100,7 @@ class HumanAudioVADContext(HandlerContext):
             output_audio = np.concatenate(
                 [clip, np.zeros(self.config.speech_padding, dtype=clip.dtype)], axis=0)
             logger.info("End of human speech")
+            # 下游根据需要决定是否清理标志，这里不修改 shared_states
             extra_args =  {
                 "human_speech_end": True,
                 "post_padding": self.config.speech_padding,
@@ -223,6 +228,10 @@ class HandlerAudioVAD(HandlerBase, ABC):
         audio = inputs.data.get_main_data()
         if audio is None:
             return
+        # 标记前端就绪：后端已收到前端音频
+        if context.shared_states is not None and not context.shared_states.frontend_ready:
+            context.shared_states.frontend_ready = True
+
         audio_entry = inputs.data.get_main_definition_entry()
         sample_rate = audio_entry.sample_rate
         audio = audio.squeeze()
@@ -246,7 +255,7 @@ class HandlerAudioVAD(HandlerBase, ABC):
             timestamp = extra_args.get("head_sample_id", head_sample_id)
             speech_id = f"speech-{context.session_id}-{context.speech_id}"
             if human_speech_end:
-                context.shared_states.enable_vad = False
+                # 不再禁用 VAD，持续监听以便任何阶段均可打断
                 context.reset()
             if audio_clip is not None:
                 output = DataBundle(output_definition)

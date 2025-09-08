@@ -4,6 +4,7 @@ from typing import cast, Optional, Dict
 import numpy as np
 from loguru import logger
 import torch.multiprocessing as mp
+import time
 
 from chat_engine.data_models.runtime_data.data_bundle import DataBundleDefinition, DataBundleEntry, \
     VariableSize
@@ -15,7 +16,7 @@ from chat_engine.contexts.handler_context import HandlerContext
 from chat_engine.contexts.session_context import SessionContext, SharedStates
 from chat_engine.data_models.chat_data.chat_data_model import ChatData
 from chat_engine.data_models.chat_engine_config_data import ChatEngineConfigModel
-from handlers.avatar.liteavatar.liteavatar_worker import Tts2FaceConfigModel
+from handlers.avatar.liteavatar.liteavatar_worker import Tts2FaceConfigModel, Tts2FaceEvent
 from handlers.avatar.liteavatar.liteavatar_handler_context import HandlerTts2FaceContext
 from handlers.avatar.liteavatar.liteavatar_worker_manager import LiteAvatarWorkerManager
 
@@ -62,7 +63,8 @@ class HandlerTts2Face(HandlerBase, ABC):
         self.output_data_definitions[ChatDataType.AVATAR_VIDEO] = video_output_definition
         self.lite_avatar_worker_manager = LiteAvatarWorkerManager(
             handler_config.concurrent_limit, self.handler_root, handler_config)
-    
+        self._vad_sample_rate = 16000
+
     def create_context(self, session_context: SessionContext,
                        handler_config: Optional[Tts2FaceConfigModel] = None) -> HandlerContext:
         self.shared_state = session_context.shared_states
@@ -87,7 +89,15 @@ class HandlerTts2Face(HandlerBase, ABC):
             ChatDataType.AVATAR_AUDIO: HandlerDataInfo(
                 type=ChatDataType.AVATAR_AUDIO,
                 input_consume_mode=ChatDataConsumeMode.ONCE,
-            )
+            ),
+            ChatDataType.HUMAN_AUDIO: HandlerDataInfo(
+                type=ChatDataType.HUMAN_AUDIO,
+                input_consume_mode=ChatDataConsumeMode.DEFAULT,
+            ),
+            ChatDataType.HUMAN_TEXT: HandlerDataInfo(
+                type=ChatDataType.HUMAN_TEXT,
+                input_consume_mode=ChatDataConsumeMode.DEFAULT,
+            ),
         }
         outputs = {
             ChatDataType.AVATAR_AUDIO: HandlerDataInfo(
@@ -105,11 +115,46 @@ class HandlerTts2Face(HandlerBase, ABC):
 
     def handle(self, context: HandlerContext, inputs: ChatData,
                output_definitions: Dict[ChatDataType, HandlerDataInfo]):
+        context = cast(HandlerTts2FaceContext, context)
+        # 1) 基于 ASR 文本有效性来打断
+        if inputs.type == ChatDataType.HUMAN_TEXT:
+            is_valid = inputs.data.get_meta('human_text_valid', False)
+            if is_valid and (not context.interrupt_sent):
+                try:
+                    context.lite_avatar_worker.event_in_queue.put_nowait(Tts2FaceEvent.INTERRUPT)
+                    context.interrupt_sent = True
+                    if context.shared_state is not None:
+                        context.shared_state.user_speaking = True
+                        context.shared_state.script_paused = True
+                except Exception as e:
+                    logger.warning(f"Failed to send INTERRUPT to avatar worker: {e}")
+            return
+
+        # 2) 处理人声的结束清理
+        if inputs.type == ChatDataType.HUMAN_AUDIO:
+            human_speech_start = inputs.data.get_meta("human_speech_start", False)
+            if human_speech_start and not context.interrupt_sent:
+                try:
+                    context.lite_avatar_worker.event_in_queue.put_nowait(Tts2FaceEvent.INTERRUPT)
+                    context.interrupt_sent = True
+                except Exception as e:
+                    logger.warning(f"Failed to send INTERRUPT to avatar worker: {e}")
+            human_speech_end = inputs.data.get_meta("human_speech_end", False)
+            if human_speech_end:
+                context.human_speech_acc_ms = 0.0
+                context.human_speech_last_ts = 0.0
+                context.interrupt_sent = False
+                if context.shared_state is not None:
+                    context.shared_state.user_speaking = False
+            return
+
+        # 3) Avatar 播放音频
         if inputs.type != ChatDataType.AVATAR_AUDIO:
             return
-        context = cast(HandlerTts2FaceContext, context)
         speech_id = inputs.data.get_meta("speech_id")
         speech_end = inputs.data.get_meta("avatar_speech_end", False)
+        if context.shared_state is not None:
+            context.shared_state.avatar_speaking = not speech_end
         audio_entry = inputs.data.get_main_definition_entry()
         audio_array = inputs.data.get_main_data()
         if audio_array is not None:
@@ -125,6 +170,12 @@ class HandlerTts2Face(HandlerBase, ABC):
             audio_data=audio_array.tobytes(),
             sample_rate=audio_entry.sample_rate,
         )
+        # 记录当前 speech_id，等待前端ACK
+        if context.shared_state is not None and speech_id:
+            context.shared_state.current_speech_id = speech_id
+            if speech_end:
+                # 音频包结束，等待前端播放完成ACK
+                context.shared_state.frontend_playback_done = False
         context.lite_avatar_worker.audio_in_queue.put(speech_audio)
 
     def destroy_context(self, context: HandlerContext):
