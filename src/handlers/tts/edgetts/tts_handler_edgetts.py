@@ -33,6 +33,7 @@ class TTSContext(HandlerContext):
         self.input_text = ''
         self.dump_audio = False
         self.audio_dump_file = None
+        self.shared_states = None
 
 
 class HandlerTTS(HandlerBase, ABC):
@@ -83,6 +84,7 @@ class HandlerTTS(HandlerBase, ABC):
             handler_config = TTSConfig()
         context = TTSContext(session_context.session_info.session_id)
         context.input_text = ''
+        context.shared_states = session_context.shared_states
         if context.dump_audio:
             dump_file_path = os.path.join(DirectoryInfo.get_project_dir(), 'temp',
                                             f"dump_avatar_audio_{context.session_id}_{time.localtime().tm_hour}_{time.localtime().tm_min}.pcm")
@@ -94,7 +96,7 @@ class HandlerTTS(HandlerBase, ABC):
         edge_tts.Communicate(text="测试音频启动", voice=self.voice)
 
     def filter_text(self, text):
-        pattern = r"[^a-zA-Z0-9\u4e00-\u9fff,.\~!?，。！？ ]"  # 匹配不在范围内的字符
+        pattern = r"[^a-zA-Z0-9\u4e00-\u9fff,.\~!?，。！？ ]"
         filtered_text = re.sub(pattern, "", text)
         return filtered_text
 
@@ -114,6 +116,11 @@ class HandlerTTS(HandlerBase, ABC):
             text = re.sub(r"<\|.*?\|>", "", text)
             context.input_text += self.filter_text(text)
 
+        # 若被打断或用户在说话，直接丢弃当前文本
+        if context.shared_states is not None and (context.shared_states.user_speaking or context.shared_states.llm_cancel):
+            context.input_text = ''
+            return
+
         text_end = inputs.data.get_meta("avatar_text_end", False)
         if not text_end:
             sentences = re.split(r'(?<=[,.~!?，。！？])', context.input_text)
@@ -125,16 +132,25 @@ class HandlerTTS(HandlerBase, ABC):
                 for sentence in complete_sentences:
                     if len(sentence.strip()) < 1:
                         continue
+                    # 在生成前再检查是否被打断
+                    if context.shared_states is not None and (context.shared_states.user_speaking or context.shared_states.llm_cancel):
+                        context.input_text = ''
+                        return
                     logger.info('current sentence' + sentence)
                     
                     communicate = edge_tts.Communicate(sentence, self.voice)
                     data = b''
-
+                    interrupted = False
                     for chunk in communicate.stream_sync():
+                        if context.shared_states is not None and (context.shared_states.user_speaking or context.shared_states.llm_cancel):
+                            interrupted = True
+                            break
                         if chunk['type'] == 'audio':
                             # tts_audio = chunk['data']
                             data += chunk['data']
-                    
+                    if interrupted:
+                        context.input_text = ''
+                        return
                     output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
                     output_audio = output_audio[np.newaxis, ...]
                     output = DataBundle(output_definition)
@@ -145,21 +161,30 @@ class HandlerTTS(HandlerBase, ABC):
         else:
             logger.info('last sentence' + context.input_text)
             if context.input_text is not None and len(context.input_text.strip()) > 0:
+                    # 在生成前再检查是否被打断
+                    if context.shared_states is not None and (context.shared_states.user_speaking or context.shared_states.llm_cancel):
+                        context.input_text = ''
+                        return
                     communicate = edge_tts.Communicate(context.input_text, self.voice)
                     data = b''
-
+                    interrupted = False
                     for chunk in communicate.stream_sync():
+                        if context.shared_states is not None and (context.shared_states.user_speaking or context.shared_states.llm_cancel):
+                            interrupted = True
+                            break
                         if chunk['type'] == 'audio':
                             # tts_audio = chunk['data']
                             data += chunk['data']
-                    output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
-                    output_audio = output_audio[np.newaxis, ...]
-                    output = DataBundle(output_definition)
-                    output.set_main_data(output_audio)
-                    output.add_meta("avatar_speech_end", False)
-                    output.add_meta("speech_id", speech_id)
-                    context.submit_data(output)
+                    if not interrupted:
+                        output_audio = librosa.load(io.BytesIO(data), sr=None)[0]
+                        output_audio = output_audio[np.newaxis, ...]
+                        output = DataBundle(output_definition)
+                        output.set_main_data(output_audio)
+                        output.add_meta("avatar_speech_end", False)
+                        output.add_meta("speech_id", speech_id)
+                        context.submit_data(output)
             context.input_text = ''
+            # 无论是否被打断，发一个end包收尾，便于avatar侧回到待机
             output = DataBundle(output_definition)
             output.set_main_data(np.zeros(shape=(1, 240), dtype=np.float32))
             output.add_meta("avatar_speech_end", True)

@@ -13,6 +13,15 @@ from chat_engine.data_models.session_info_data import SessionInfoData, IOQueueTy
 class SharedStates:
     active: bool = False
     enable_vad: bool = True
+    user_speaking: bool = False
+    avatar_speaking: bool = False
+    script_paused: bool = False
+    wait_frontend_ack: bool = True
+    current_speech_id: str = ""
+    frontend_playback_done: bool = True
+    frontend_ready: bool = False
+    llm_waiting: bool = False
+    llm_cancel: bool = False
 
 
 class SessionContext(object):

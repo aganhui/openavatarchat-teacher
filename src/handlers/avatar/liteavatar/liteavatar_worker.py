@@ -32,11 +32,13 @@ class Tts2FaceConfigModel(HandlerBaseConfigModel, BaseModel):
     fps: int = Field(default=25)
     enable_fast_mode: bool = Field(default=False)
     use_gpu: bool = Field(default=True)
+    interrupt_min_ms: int = Field(default=700)
 
 
 class Tts2FaceEvent(Enum):
     START = 1001
     STOP = 1002
+    INTERRUPT = 1003
 
     LISTENING_TO_SPEAKING = 2001
     SPEAKING_TO_LISTENING = 2002
@@ -135,7 +137,15 @@ class LiteAvatarWorker:
         # keep process alive
         while True:
             time.sleep(1)
-    
+
+    def _clear_output_queues(self):
+        try:
+            for q in [self.audio_in_queue, self.audio_out_queue, self.video_out_queue]:
+                while not q.empty():
+                    q.get()
+        except Exception:
+            pass
+
     def _event_input_loop(self):
         while True:
             event: Tts2FaceEvent = self.event_in_queue.get()
@@ -160,7 +170,15 @@ class LiteAvatarWorker:
                 self.audio_input_thread = None
                 self._clear_mp_queues()
                 self.context = None
-    
+
+            elif event == Tts2FaceEvent.INTERRUPT:
+                # 不中断会话，清空输入/输出队列，立刻打断发声
+                try:
+                    self.processor.interrupt()
+                except Exception as e:
+                    logger.warning(f"interrupt failed: {e}")
+                self._clear_output_queues()
+
     def _audio_input_loop(self):
         while self.session_running:
             try:

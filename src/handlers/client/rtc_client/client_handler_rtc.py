@@ -197,6 +197,35 @@ class ClientHandlerRtc(ClientHandlerBase):
             }
             return JSONResponse(status_code=200, content=config)
 
+        # 前端声明已完成初始化
+        @fastapi.post('/openavatarchat/ready')
+        async def frontend_ready():
+            try:
+                shared = self.handler_delegate.session_context.shared_states if self.handler_delegate and self.handler_delegate.session_context else None
+                if shared is not None:
+                    shared.frontend_ready = True
+                    return JSONResponse(status_code=200, content={"ok": True})
+                return JSONResponse(status_code=400, content={"ok": False})
+            except Exception as e:
+                logger.warning(e)
+                return JSONResponse(status_code=500, content={"ok": False})
+
+        # 新增：前端播放完成ACK
+        @fastapi.post('/openavatarchat/ack')
+        async def playback_ack(payload: Dict):
+            try:
+                speech_id = payload.get('speech_id', None) if isinstance(payload, dict) else None
+                shared = self.handler_delegate.session_context.shared_states if self.handler_delegate and self.handler_delegate.session_context else None
+                if shared is not None:
+                    # 可选校验 speech_id 一致性
+                    if speech_id is None or speech_id == shared.current_speech_id:
+                        shared.frontend_playback_done = True
+                        return JSONResponse(status_code=200, content={"ok": True})
+                return JSONResponse(status_code=400, content={"ok": False})
+            except Exception as e:
+                logger.warning(e)
+                return JSONResponse(status_code=500, content={"ok": False})
+
         frontend_path = Path(DirectoryInfo.get_src_dir() + '/handlers/client/rtc_client/frontend/dist')
         if frontend_path.exists():
             logger.info(f"Serving frontend from {frontend_path}")
