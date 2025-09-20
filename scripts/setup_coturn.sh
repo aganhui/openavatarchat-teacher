@@ -1,22 +1,8 @@
 #!/bin/bash
 
 # 检查是否以root权限运行
-if [ "$EUID" -ne 0 ]; then 
+if [ "$(id -u)" -ne 0 ]; then
     echo "请使用sudo运行此脚本"
-    exit 1
-fi
-
-# 安装coturn
-echo "正在安装coturn..."
-if command -v apt-get &> /dev/null; then
-    apt-get update
-    apt-get install -y coturn
-elif command -v yum &> /dev/null; then
-    yum install -y coturn
-elif command -v brew &> /dev/null; then
-    brew install coturn
-else
-    echo "未找到包管理器，请手动安装coturn"
     exit 1
 fi
 
@@ -27,13 +13,14 @@ if [ -z "$PRIVATE_IP" ]; then
 fi
 
 # 获取公网IP地址
-PUBLIC_IP=$(curl -s ifconfig.me)
+PUBLIC_IP=$(curl -s ipinfo.io/ip)
 if [ -z "$PUBLIC_IP" ]; then
-    PUBLIC_IP=$(curl -s ipinfo.io/ip)
+    PUBLIC_IP=$(curl -s ifconfig.me)
 fi
 
 # 生成一个基于公网IP的realm标识符
-REALM="turn.${PUBLIC_IP//./-}.turnserver"
+SAFE_PUBLIC_IP=$(echo "$PUBLIC_IP" | tr '.' '-')
+REALM="turn.${SAFE_PUBLIC_IP}.turnserver"
 
 echo "检测到内网IP地址: $PRIVATE_IP"
 echo "检测到公网IP地址: $PUBLIC_IP"
@@ -50,6 +37,8 @@ if [ -f "$CONFIG_FILE" ]; then
     cp "$CONFIG_FILE" "${CONFIG_FILE}.bak"
 fi
 
+chmod 644 ./ssl_certs/localhost.key
+
 # 写入新的配置
 cat > "$CONFIG_FILE" << EOF
 listening-port=3478
@@ -64,14 +53,14 @@ fingerprint
 lt-cred-mech
 user=username:password
 realm=$REALM
+cert=/workspace/OpenAvatarChat/ssl_certs/localhost.crt
+pkey=/workspace/OpenAvatarChat/ssl_certs/localhost.key
+cli-password=gluttony10
 EOF
 
 # 启用coturn服务
 echo "正在启用coturn服务..."
-if command -v systemctl &> /dev/null; then
-    systemctl enable coturn
-    systemctl restart coturn
-elif command -v service &> /dev/null; then
+if command -v service &> /dev/null; then
     service coturn restart
 else
     echo "无法自动重启coturn服务，请手动重启"
