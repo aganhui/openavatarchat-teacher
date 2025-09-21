@@ -43,11 +43,19 @@ default:
         history_length: 20
         # model_name: "gemini-2.0-flash"
         system_prompt: "请你扮演一个 AI 助手，用简短的两三句对话来回答用户的问题，并在对话内容中加入合适的标点符号，不需要讨论标点符号相关的内容"
+        system_prompt_file: "resource/system_prompt.txt"
+        system_prompt_hot_reload: True
         api_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
         api_key: 'sk-df6031a56921449bb945217c193b2fd0'
         # api_url: 'http://127.0.0.1:11434/v1' # ollama
         # api_url: 'https://generativelanguage.googleapis.com/v1beta/openai/'
         # api_key: '' # default=os.getenv("DASHSCOPE_API_KEY")
+      ScriptReader:
+        enabled: True
+        module: script/script_handler_reader
+        script_file: "resource/script.txt"
+        sentence_delay: 0.0
+        loop: False
       LiteAvatar:
         module: avatar/liteavatar/avatar_handler_liteavatar
         avatar_name: 20250408/sample_data
